@@ -20,6 +20,7 @@ def connect():
 
 sock, f = connect()
 seq = 1
+gap = 0   # how far total is behind seq; only print when it changes
 start = time.time()
 while seq <= COUNT:
     try:
@@ -37,9 +38,10 @@ while seq <= COUNT:
     r_seq, r_total = map(int, reply.split())
     if VERBOSE and r_seq % VERBOSE == 0:
         print(f"{time.strftime('%H:%M:%S')}  seq {r_seq:>7}  total {r_total:>7}", flush=True)
-    if r_total != r_seq:
+    if r_seq - r_total != gap:
         # with value=1 every time, total should equal seq. The gap is lost work.
-        print(f"[client] seq {r_seq}: total={r_total}, lost {r_seq - r_total} requests")
+        gap = r_seq - r_total
+        print(f"[client] seq {r_seq}: total={r_total}, lost {gap} requests")
     seq += 1
 
 elapsed = time.time() - start
