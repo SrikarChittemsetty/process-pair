@@ -1,0 +1,4 @@
+out_*.txt
+__pycache__/
+*.png
+!results/*.png
