@@ -42,4 +42,14 @@ interval is roughly sqrt(2CM), C being what a checkpoint costs and M being how l
 lasts between failures. That's for saving to disk, not a live backup, so I don't know if it
 holds here. My hypothesis is the shape holds but the number is off, because their formula assumes lost work gets redone and mine just loses it. I expect it to predict a smaller N than I measure.
 
+## Results
+
+Done. See [RESULTS.md](RESULTS.md). Short version: checkpointing every request costs 21% throughput, the knee is around N=10, lost work is exactly N/2, takeover time has nothing to do with N and everything to do with a zombie listen queue, and the 1974 formula lands 20x too high because it prices lost work as rework.
+
+## Run it
+
+    ./demo.sh          # one failover, watch the count survive a kill -9
+    python3 sweep.py   # the full experiment (~20 min)
+    python3 plot.py    # results/tradeoff.png
+
 Paper: Gray, "Why Do Computers Stop and What Can Be Done About It?", Tandem TR 85.7, 1985.
