@@ -1,9 +1,11 @@
+import os
 import socket
 import sys
 import time
 
 PORT = 5000
 COUNT = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
+VERBOSE = int(os.environ.get("PP_VERBOSE", "0"))   # print every Nth reply (for the demo)
 
 def connect():
     # keep trying until someone is listening on 5000 (primary, or backup after takeover)
@@ -33,6 +35,8 @@ while seq <= COUNT:
         print(f"[client] reconnected after {time.time() - t0:.4f}s, resending seq {seq}")
         continue
     r_seq, r_total = map(int, reply.split())
+    if VERBOSE and r_seq % VERBOSE == 0:
+        print(f"{time.strftime('%H:%M:%S')}  seq {r_seq:>7}  total {r_total:>7}", flush=True)
     if r_total != r_seq:
         # with value=1 every time, total should equal seq. The gap is lost work.
         print(f"[client] seq {r_seq}: total={r_total}, lost {r_seq - r_total} requests")
