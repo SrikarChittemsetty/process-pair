@@ -5,11 +5,11 @@ and measure tradeoffs.
 
 ## What it is
 
-Two copies of the same little server on my laptop. The primary sits on port 5000 and answers
-requests from a client. Every request has a sequence number. The backup sits on port 5001 and
+Two copies of the same little server on my laptop. The primary sits on port 5100 and answers
+requests from a client. Every request has a sequence number. The backup sits on port 5101 and
 gets two things from the primary: a heartbeat every few ms, and every N requests, a copy of the
 primary's state (a checkpoint). If the heartbeats stop, the backup decides the primary is dead,
-grabs port 5000, and starts answering from whatever checkpoint it last got. The client notices
+grabs port 5100, and starts answering from whatever checkpoint it last got. The client notices
 its connection died, reconnects, and resends the request it was waiting on. The backup checks
 the sequence number so it doesn't do that request twice.
 
@@ -44,12 +44,21 @@ holds here. My hypothesis is the shape holds but the number is off, because thei
 
 ## Results
 
-Done. See [RESULTS.md](RESULTS.md). Short version: checkpointing every request costs 21% throughput, the knee is around N=10, lost work is exactly N/2, takeover time has nothing to do with N and everything to do with a zombie listen queue, and the 1974 formula lands 20x too high because it prices lost work as rework.
+Done. See [RESULTS.md](RESULTS.md). Short version: checkpointing every request costs 25% throughput,
+the knee is between N=5 and 10, lost work is about N/2, takeover time has nothing to do with N, and the
+1974 formula lands 20x too high because it prices lost work as rework. Then I built Gray's two fixes:
+client replay closes the hole for free, a durable log closes it for 99% of throughput. Also, the first
+version of the takeover finding was wrong, because macOS AirPlay listens on port 5000. Section 3.
 
 ## Run it
 
-    ./demo.sh          # one failover, watch the count survive a kill -9
-    python3 sweep.py   # the full experiment (~20 min)
-    python3 plot.py    # results/tradeoff.png
+    ./demo.sh                          # one failover, watch the count survive a kill -9
+    PP_MODE=replay ./demo.sh           # same, with client replay: nothing lost
+    python3 sweep.py                   # the full experiment (~15 min)
+    PP_MODE=replay python3 sweep.py    # again with client replay
+    PP_MODE=durable python3 sweep.py 5 1 10 100 1000   # durable log, slow, fewer trials
+    python3 plot.py                    # results/tradeoff.png
+
+Don't run it on port 5000 on a Mac. See RESULTS.md section 3.
 
 Paper: Gray, "Why Do Computers Stop and What Can Be Done About It?", Tandem TR 85.7, 1985.
