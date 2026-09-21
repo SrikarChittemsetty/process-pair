@@ -10,10 +10,15 @@ import subprocess
 import sys
 import time
 
+import os
+
 TRIALS = int(sys.argv[1]) if len(sys.argv) > 1 else 20
 NS = [int(x) for x in sys.argv[2:]] or [1, 10, 100, 1000]
-CLIENT_COUNT = 400000            # enough to still be running when we kill
-KILL_AFTER = (1.5, 3.0)          # seconds after start, uniform random
+MODE = os.environ.get("PP_MODE", "none")          # none | replay | durable
+# durable mode forces every request to disk (~3 ms each on this laptop), so it
+# needs far fewer requests to still be running when the kill lands.
+CLIENT_COUNT = int(os.environ.get("PP_COUNT", "3000" if MODE == "durable" else "150000"))
+KILL_AFTER = (1.0, 2.5)          # seconds after start, uniform random
 
 def run(cmd):
     return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -34,6 +39,8 @@ def trial(n):
     take = re.search(r"takeover took ([\d.]+)s", b_out)
     rps = re.search(r"= (\d+) req/s", c_out)
     reconnects = len(re.findall(r"\[client\] reconnected", c_out))
+    if lost is None and rps is None:
+        raise RuntimeError(f"trial produced no result:\n{c_out[-500:]}\n{b_out[-500:]}")
     return (int(lost.group(1)) if lost else 0,
             float(take.group(1)) if take else None,
             int(rps.group(1)) if rps else None,
@@ -43,15 +50,14 @@ def healthy_throughput(n):
     """Throughput with no kill at all, so it is not polluted by the failover."""
     b = run(["python3", "-u", "backup.py"]); time.sleep(0.3)
     p = run(["python3", "-u", "primary.py", str(n)]); time.sleep(0.3)
-    c = run(["python3", "-u", "client.py", "200000"])
-    c_out, _ = c.communicate(timeout=120)
+    c = run(["python3", "-u", "client.py", str(CLIENT_COUNT if MODE == "durable" else 200000)])
+    c_out, _ = c.communicate(timeout=300)
     p.kill(); b.kill(); b.communicate(); p.communicate()
     m = re.search(r"= (\d+) req/s", c_out)
     return int(m.group(1)) if m else None
 
-import os
 os.makedirs("results", exist_ok=True)
-csv = open("results/trials.csv", "a")
+csv = open("results/trials.csv" if MODE == "none" else f"results/trials_{MODE}.csv", "a")
 print("N,trial,lost,takeover_s,req_s_during_run,reconnects")
 results = {}
 for n in NS:
