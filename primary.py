@@ -1,15 +1,26 @@
+import fcntl
+import os
 import socket
 import sys
 import threading
 import time
 
-PORT = 5000          # clients connect here
-BACKUP_PORT = 5001   # backup listens here for heartbeats and checkpoints
+PORT = 5100          # clients connect here
+BACKUP_PORT = 5101   # backup listens here for heartbeats and checkpoints
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 10   # checkpoint every N requests
 HB_INTERVAL = 0.02   # seconds between heartbeats
+MODE = os.environ.get("PP_MODE", "none")   # none | replay | durable (see README)
+LOG_PATH = "results/durable.log"
 
 last_seq = 0
 total = 0
+ckpt_seq = 0   # last seq the backup has been told about
+
+# durable mode: every request is written and forced to disk before we reply.
+# F_FULLFSYNC because on macOS a plain fsync() does not wait for the disk.
+if MODE == "durable":
+    os.makedirs("results", exist_ok=True)
+    log = open(LOG_PATH, "w")
 
 # connect to the backup first; keep trying until it is up
 backup = socket.socket()
@@ -54,10 +65,16 @@ while True:
         seq, value = int(seq), int(value)
         total += value
         last_seq = seq
+        if MODE == "durable":
+            log.write(f"{seq} {value}\n")
+            log.flush()
+            fcntl.fcntl(log.fileno(), fcntl.F_FULLFSYNC)
         # the knob: every N requests, copy our state to the backup BEFORE replying
         if seq % N == 0:
             backup.sendall(f"CKPT {last_seq} {total}\n".encode())
-        conn.sendall(f"{seq} {total}\n".encode())
+            ckpt_seq = last_seq
+        # reply carries ckpt_seq so a replaying client knows what it may forget
+        conn.sendall(f"{seq} {total} {ckpt_seq}\n".encode())
 
 conn.close()
 server.close()

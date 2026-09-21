@@ -1,9 +1,12 @@
+import os
 import socket
 import time
 
-PORT = 5000          # we take this over when the primary dies
-BACKUP_PORT = 5001   # we listen here for the primary's heartbeats and checkpoints
+PORT = 5100          # we take this over when the primary dies
+BACKUP_PORT = 5101   # we listen here for the primary's heartbeats and checkpoints
 HB_TIMEOUT = 0.1     # seconds of silence before we declare the primary dead
+MODE = os.environ.get("PP_MODE", "none")
+LOG_PATH = "results/durable.log"
 
 last_seq = 0
 total = 0
@@ -40,6 +43,24 @@ while True:
             last_seq, total = int(parts[1]), int(parts[2])
 
 # phase 2: take over. Bind the client port and serve from the last checkpoint.
+# durable mode: the primary's log has every request it replied to, so roll forward
+# from the checkpoint before serving. This is the recovery half of a transaction log.
+if MODE == "durable":
+    replayed = 0
+    try:
+        with open(LOG_PATH) as log:
+            for line in log:
+                parts = line.split()
+                if len(parts) != 2:
+                    continue   # torn last line from the crash
+                seq, value = int(parts[0]), int(parts[1])
+                if seq > last_seq:
+                    total += value
+                    last_seq = seq
+                    replayed += 1
+    except FileNotFoundError:
+        pass
+    print(f"rolled forward {replayed} requests from the log")
 print(f"taking over with last_seq={last_seq} total={total}")
 server = socket.socket()
 server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -65,7 +86,8 @@ while True:
             total += value
             last_seq = seq
         # else: already applied before the crash, do NOT add again. Just answer.
-        conn.sendall(f"{seq} {total}\n".encode())
+        # We have no backup of our own, so everything we hold counts as checkpointed.
+        conn.sendall(f"{seq} {total} {last_seq}\n".encode())
 
 conn.close()
 server.close()
