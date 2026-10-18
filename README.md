@@ -47,7 +47,7 @@ holds here. My hypothesis is the shape holds but the number is off, because thei
 Done. See [RESULTS.md](RESULTS.md). Short version: checkpointing every request costs 25% throughput,
 the knee is between N=5 and 10, lost work is about N/2, takeover time has nothing to do with N, and the
 1974 formula lands 20x too high because it prices lost work as rework. Then I built Gray's two fixes:
-client replay closes the hole for free, a durable log closes it for 99% of throughput. Also, the first
+client replay closes the hole for free, a durable log closes it too but costs 99% of throughput, because a real disk flush is 2.9 ms. Also, the first
 version of the takeover finding was wrong, because macOS AirPlay listens on port 5000. Section 3.
 
 ## Run it
