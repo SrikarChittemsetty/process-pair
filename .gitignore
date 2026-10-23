@@ -3,3 +3,4 @@ __pycache__/
 # *.png
 !results/*.png
 results/durable.log
+.hypothesis/

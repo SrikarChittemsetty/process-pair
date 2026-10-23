@@ -5,8 +5,8 @@ import sys
 import threading
 import time
 
-PORT = 5100          # clients connect here
-BACKUP_PORT = 5101   # backup listens here for heartbeats and checkpoints
+PORT = int(os.environ.get("PP_PORT", "5100"))          # clients connect here
+BACKUP_PORT = int(os.environ.get("PP_BACKUP_PORT", "5101"))   # backup listens here for heartbeats and checkpoints
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 10   # checkpoint every N requests
 HB_INTERVAL = 0.02   # seconds between heartbeats
 MODE = os.environ.get("PP_MODE", "none")   # none | replay | durable (see README)
