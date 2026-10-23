@@ -4,3 +4,4 @@ __pycache__/
 !results/*.png
 results/durable.log
 .hypothesis/
+tests/hegel/.hegel/
