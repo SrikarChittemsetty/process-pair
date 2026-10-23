@@ -50,6 +50,90 @@ the knee is between N=5 and 10, lost work is about N/2, takeover time has nothin
 client replay closes the hole for free, a durable log closes it too but costs 99% of throughput, because a real disk flush is 2.9 ms. Also, the first
 version of the takeover finding was wrong, because macOS AirPlay listens on port 5000. Section 3.
 
+## Property tests
+
+`tests/test_properties.py` rewrites the crash tests as property tests with Hypothesis
+(`RuleBasedStateMachine`). It starts the real `primary.py` and `backup.py`, and Hypothesis picks
+the schedule: the checkpoint interval N (1 to 12), how many requests to send, when to `kill -9`
+the primary, and whether the kill lands between requests or while one is still on the wire. The
+client side is a small harness that speaks the same protocol as `client.py` and handles failures
+the same way, because `client.py` is one fixed loop the test can't step through.
+
+Request k carries the value 2^(k-1), so the server's total says exactly which requests it has
+applied. After every reply the test checks three things:
+
+- (a) nothing acked is lost: every request the client saw answered is in the total
+- (b) nothing is applied twice: the total is never more than the sum of everything sent
+- (c) the total the client sees never goes backwards
+
+It also fails if nobody answers on the client port for a few seconds, because a pair that's down
+is losing everything.
+
+Run it:
+
+    pip install hypothesis pytest
+    python3 -m pytest tests/test_properties.py                      # checkpoint only
+    PP_MODE=replay  python3 -m pytest tests/test_properties.py
+    PP_MODE=durable python3 -m pytest tests/test_properties.py
+    PP_STALL=1 PP_MODE=replay python3 -m pytest tests/test_properties.py   # also pause the primary
+
+`PP_EXAMPLES` sets the number of examples (default 50). Ports start at 5200 and skip anything
+already listening. `primary.py` and `backup.py` now read `PP_PORT`, `PP_BACKUP_PORT` and
+`PP_HB_TIMEOUT` so the test can use its own ports. The defaults are unchanged.
+
+What it found:
+
+**Checkpoint only, it breaks right away.** It fails within the first few dozen examples every
+time and shrinks to the same thing every time:
+
+    AssertionError: seq 2: acked requests [1] are missing from the state (N=2, mode=none, reconnects=1)
+    state = ProcessPair()
+    state.start_pair(n=2)
+    state.send(k=1)
+    state.kill_primary()
+    state.send(k=1)
+    state.teardown()
+
+N=2, one request acked, kill the primary, send one more. Request 1 was answered but never
+checkpointed, so the backup never heard of it. That's the N/2 lost work from RESULTS.md section
+2, boiled down to the smallest case. On one run it shrank to a two step version instead, where
+the kill lands 0.2 ms after request 1 goes out, just after the primary answered it.
+
+**Replay holds.** 1,000 examples, 0 failures, in 75 seconds. Most examples include a failover,
+a mix of kills between requests and mid-request, and N from 1 to 12.
+
+**Durable holds.** 1,000 examples, 0 failures, in 152 seconds.
+
+**A pause takes down the whole pair.** With `PP_STALL=1` the test can `SIGSTOP` the primary for a
+moment and then let it go, like a GC pause or a laptop lid. It fails every run and shrinks to:
+
+    AssertionError: seq 1: nobody listening on 5276 for 1.0s, the pair is down
+    state = ProcessPair()
+    state.start_pair(n=1)
+    state.stall_primary(pause=0.3)
+    state.kill_primary_mid_request(delay=0)
+    state.teardown()
+
+The kill isn't needed. Run by hand, a pause and one request is enough. Here's what happens. The
+backup hears no heartbeat for 0.1 s and decides the primary is dead. It tries to take port 5100,
+but the primary is still holding it, so `bind` fails with "Address already in use" and the backup
+crashes. The primary wakes up, sends its next checkpoint to a backup that's gone, gets a broken
+pipe and crashes too. Nothing was killed and both processes are dead. I swept the pause by hand,
+five tries each: 0.05, 0.08 and 0.1 s were fine every time, 0.12, 0.15 and 0.2 s took the pair
+down every time. With a bigger N the primary keeps going until its next checkpoint, so for a while
+it looks healthy with no backup at all. This is the false failure detection problem. A slow
+process looks exactly like a dead one, and the takeover path assumes dead means gone.
+
+Two more things the tests made obvious:
+
+- The pair survives one failover, not more. After the backup takes over it never gets a backup of
+  its own, and `primary.py` always starts from zero, so there's no way to rejoin. A second crash
+  is a total outage. So "after any number of failovers" really means after one.
+- The first version of the test cycled through ports 5200 to 5600 and hit 5432, where OrbStack
+  forwards Postgres. After a kill the client reconnected to OrbStack, which accepted and never
+  answered, and the test hung until it was killed by hand. Same thing as AirPlay on port 5000 (RESULTS.md
+  section 3). The test now skips ports that are already taken and fails instead of hanging.
+
 ## Run it
 
     ./demo.sh                          # one failover, watch the count survive a kill -9

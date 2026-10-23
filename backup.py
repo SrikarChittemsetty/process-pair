@@ -2,9 +2,9 @@ import os
 import socket
 import time
 
-PORT = 5100          # we take this over when the primary dies
-BACKUP_PORT = 5101   # we listen here for the primary's heartbeats and checkpoints
-HB_TIMEOUT = 0.1     # seconds of silence before we declare the primary dead
+PORT = int(os.environ.get("PP_PORT", "5100"))          # we take this over when the primary dies
+BACKUP_PORT = int(os.environ.get("PP_BACKUP_PORT", "5101"))   # we listen here for the primary's heartbeats and checkpoints
+HB_TIMEOUT = float(os.environ.get("PP_HB_TIMEOUT", "0.1"))   # seconds of silence before we declare the primary dead
 MODE = os.environ.get("PP_MODE", "none")
 LOG_PATH = "results/durable.log"
 
