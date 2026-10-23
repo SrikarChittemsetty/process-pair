@@ -10,6 +10,7 @@ LOG_PATH = "results/durable.log"
 
 last_seq = 0
 total = 0
+epoch = 0   # the primary's term, learned from its messages. We bump it when we take over.
 
 listener = socket.socket()
 listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -21,7 +22,9 @@ primary, _ = listener.accept()
 primary.settimeout(HB_TIMEOUT)   # recv() raises if nothing arrives for HB_TIMEOUT
 print("primary connected")
 
-# phase 1: follow the primary. Every line is either HB or CKPT last_seq total.
+# phase 1: follow the primary. Every line is HB epoch time or CKPT epoch last_seq total.
+# We ack every heartbeat, and the ack is the primary's lease. The primary's lease runs out
+# a margin before our HB_TIMEOUT does, so when we time out it has already stopped serving.
 buf = b""
 dead_at = None
 while True:
@@ -33,16 +36,42 @@ while True:
             break
     except socket.timeout:
         dead_at = time.time()
-        print(f"no heartbeat for {HB_TIMEOUT}s, primary is dead")
+        print(f"no heartbeat for {HB_TIMEOUT}s, primary is dead or its lease ran out")
+        break
+    except OSError:
+        # a reset instead of a clean close, e.g. kill -9 with our acks still unread
+        dead_at = time.time()
+        print("primary connection reset")
         break
     buf += data
+    acks = b""
     while b"\n" in buf:
         line, buf = buf.split(b"\n", 1)
         parts = line.split()
-        if parts[0] == b"CKPT":
-            last_seq, total = int(parts[1]), int(parts[2])
+        if int(parts[1]) < epoch:
+            continue   # from an older term, ignore it
+        epoch = int(parts[1])
+        if parts[0] == b"HB":
+            acks += b"ACK %d %s\n" % (epoch, parts[2])
+        elif parts[0] == b"CKPT":
+            last_seq, total = int(parts[2]), int(parts[3])
+    try:
+        if acks:
+            primary.sendall(acks)
+    except OSError:
+        dead_at = time.time()
+        print("primary connection broke")
+        break
 
-# phase 2: take over. Bind the client port and serve from the last checkpoint.
+# phase 2: take over. New epoch, so anything the old primary still sends is stale. Tell it,
+# in case it's only frozen and wakes up later, then hang up on it.
+epoch += 1
+try:
+    primary.sendall(b"FENCE %d\n" % epoch)
+except OSError:
+    pass
+primary.close()
+
 # durable mode: the primary's log has every request it replied to, so roll forward
 # from the checkpoint before serving. This is the recovery half of a transaction log.
 if MODE == "durable":
@@ -61,10 +90,23 @@ if MODE == "durable":
     except FileNotFoundError:
         pass
     print(f"rolled forward {replayed} requests from the log")
-print(f"taking over with last_seq={last_seq} total={total}")
-server = socket.socket()
-server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-server.bind(("127.0.0.1", PORT))
+print(f"taking over on epoch {epoch} with last_seq={last_seq} total={total}")
+
+# Bind the client port and serve from the last checkpoint. If the old primary is only frozen
+# it still holds the port, and it can't let go until it wakes up and sees it's been fenced.
+# So keep trying with backoff instead of crashing.
+wait = 0.005
+while True:
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        server.bind(("127.0.0.1", PORT))
+        break
+    except OSError:
+        server.close()
+        print(f"port {PORT} still held by the old primary, trying again in {wait}s")
+        time.sleep(wait)
+        wait = min(wait * 2, 0.05)
 server.listen(1)
 
 conn, addr = server.accept()

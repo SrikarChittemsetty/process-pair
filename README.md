@@ -163,6 +163,41 @@ primary keeps going until its next checkpoint, so for a while it looks healthy w
 all. This is the false failure detection problem. A slow process looks exactly like a dead one,
 and the takeover path assumes dead means gone.
 
+**The fix: a lease and an epoch.** The backup now acks every heartbeat, and each ack is a lease.
+A heartbeat is stamped with the time the primary sent it, and an ack lets the primary serve until
+that time plus 0.07 s. The backup only takes over after 0.1 s of silence (`PP_HB_TIMEOUT`, same as
+before), and it can only ack a heartbeat after it got it. So the lease always runs out at least
+0.03 s before the backup is allowed to move, even if the primary was frozen with an ack sitting in
+its buffer. Before every reply the primary checks its lease. If it ran out, it asks for a fresh ack
+and waits up to 0.1 s for one. No ack, or the backup has moved on, and it steps down. It closes the
+client port and exits cleanly without answering. When the backup takes over it bumps the epoch
+(1 to 2), sends the old primary a fence message with the new epoch, and hangs up on it. Heartbeats
+and checkpoints carry the epoch too. If the client port is still held because the old primary is
+frozen, the backup retries `bind` with backoff (5 ms doubling up to 50 ms) instead of crashing. The
+old primary wakes up, reads the fence or the closed connection, and lets go of the port.
+
+By hand, five tries per pause: 0.05 and 0.08 s pauses never cause a takeover now, the primary just
+keeps going. From 0.1 s up the backup takes over almost every time, and the client gets an answer
+from it within 60 ms of the primary waking up. Nothing crashes. Same knobs, same ports, same modes.
+
+Before and after, same commands:
+
+| | before | after |
+|---|---|---|
+| Hypothesis, stall + replay | fails within 200 examples in 62 s, shrinks to the case above | 1,000 examples, 0 failures, 318 s |
+| Hegel, stall + replay | fails, 917 cases with shrinking in 313 s, same shrunk case | 1,000 cases, 0 failures, 256 s |
+| Hypothesis, replay / durable | 1,000 / 1,000, 0 failures | 500 / 300, 0 failures |
+| Hegel, replay / durable | 1,000 / 1,000, 0 failures | 300 / 300, 0 failures |
+| checkpoint only, both | fails right away | still fails right away with the same two step case, which is the point of that mode |
+
+What it doesn't cover. The primary checks the lease and then sends the reply. A pause longer than
+the 0.03 s margin right between those two lines could still let a stale answer out. The test only
+pauses between requests, so it never hits that gap. Real systems have the same gap and size the
+margin for it. Also, with only two processes the lease needs the backup alive. If the backup dies
+the primary can't renew and steps down, so the pair goes down if the backup dies first. It went down
+then before too (the primary crashed on its next checkpoint), but now it's on purpose. Fixing that
+needs a third process to vote, which is Raft.
+
 Two more things the tests made obvious:
 
 - The pair survives one failover, not more. After the backup takes over it never gets a backup of
